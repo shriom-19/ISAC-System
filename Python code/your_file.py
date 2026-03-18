@@ -1,109 +1,81 @@
 import serial
-import numpy as np
-import matplotlib.pyplot as plt
+import re
+import math
+import subprocess
+import threading
 
-# 🔧 CHANGE PORT IF NEEDED
-ser = serial.Serial('COM5', 115200)
+# 🔥 Change COM port if needed
+PORT = "COM5"
+BAUD = 115200
 
-plt.ion()
-fig, ax = plt.subplots()
+ser = serial.Serial(PORT, BAUD, timeout=1)
 
-y_data = []
 
-# 🔥 SETTINGS
-window_size = 10
-threshold_offset = 3   # sensitivity
+# ===================== 🔥 PING FUNCTION =====================
+def start_ping():
+    # Windows continuous ping (-t)
+    subprocess.Popen(
+        ["ping", "10.82.53.253", "-t"],   # 🔥 use gateway IP (IMPORTANT)
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
 
-# 🔥 BASELINE VARIABLES
-baseline_values = []
-baseline = 0
-calibration_done = False
 
+# ===================== 🔥 CSI PARSER =====================
 def parse_csi(line):
     try:
-        if "CSI_DATA" not in line:
+        if "DATA:[" not in line:
             return None
 
-        data_str = line.split("DATA:[")[1].split("]")[0]
-        values = list(map(int, data_str.split(",")))
+        # Timestamp
+        ts_match = re.search(r'TS:(\d+:\d+:\d+)', line)
+        timestamp = ts_match.group(1) if ts_match else None
 
-        I = values[::2]
-        Q = values[1::2]
+        # RSSI
+        rssi_match = re.search(r'RSSI:(-?\d+)', line)
+        rssi = int(rssi_match.group(1)) if rssi_match else None
 
-        amp = np.sqrt(np.array(I)**2 + np.array(Q)**2)
+        # DATA
+        data_match = re.search(r'DATA:\[(.*)\]', line)
+        if not data_match:
+            return None
 
-        # 🔥 REMOVE STATIC COMPONENT
-        amp = amp - np.mean(amp)
+        raw_data = list(map(int, data_match.group(1).split(',')))
 
-        # 🔥 MOTION FEATURE (BEST)
-        value = np.mean(np.abs(np.diff(amp)))
+        # Convert to amplitude (128 values)
+        csi_array = []
+        for i in range(0, len(raw_data), 2):
+            real = raw_data[i]
+            imag = raw_data[i + 1]
 
-        return value
+            amp = int(math.sqrt(real**2 + imag**2))
+            csi_array.append(amp)
+
+        return timestamp, rssi, csi_array
 
     except:
         return None
 
 
+# ===================== 🚀 START PING THREAD =====================
+ping_thread = threading.Thread(target=start_ping, daemon=True)
+ping_thread.start()
+
+
+# ===================== 🚀 MAIN LOOP =====================
 while True:
     try:
-        line = ser.readline().decode(errors='ignore')
-        value = parse_csi(line)
+        line = ser.readline().decode(errors="ignore").strip()
 
-        if value is None:
-            continue
+        result = parse_csi(line)
 
-        # 🥇 CALIBRATION PHASE
-        if not calibration_done:
-            baseline_values.append(value)
+        if result:
+            ts, rssi, csi = result
 
-            print(f"Calibrating... {len(baseline_values)}/50")
-
-            if len(baseline_values) >= 50:
-                baseline = np.mean(baseline_values)
-                calibration_done = True
-                print("\n✅ Baseline set:", round(baseline, 2))
-                print("System Ready 🚀\n")
-
-            continue
-
-        # 🥇 DETECTION
-        delta = abs(value - baseline)
-
-        if delta > threshold_offset:
-            status = "🚶 MOTION"
-        else:
-            status = "🟢 STILL"
-
-        print(f"Value: {value:.2f} | Δ: {delta:.2f} | {status}")
-
-        # 🥇 STORE DATA
-        y_data.append(value)
-
-        if len(y_data) > 100:
-            y_data = y_data[-100:]
-
-        # 🥇 SMOOTHING
-        if len(y_data) >= window_size:
-            smooth = np.convolve(y_data, np.ones(window_size)/window_size, mode='valid')
-        else:
-            smooth = y_data
-
-        current = smooth[-1]
-
-        # 🥇 PLOT
-        ax.clear()
-        ax.plot(smooth, label="CSI Signal")
-
-        # baseline line
-        ax.axhline(baseline, linestyle='--', label="Baseline")
-
-        ax.set_title(f"CSI Motion Detection | {status}")
-        ax.set_xlabel("Time")
-        ax.set_ylabel("Signal")
-
-        ax.legend()
-
-        plt.pause(0.01)
+            print("TIME:", ts)
+            print("RSSI:", rssi)
+            print("CSI (128):", csi)
+            print("-" * 60)
 
     except KeyboardInterrupt:
         print("Stopped")

@@ -1,7 +1,7 @@
 {
     "version":            "1.1",
     "project_name":       "app-template",
-    "project_version":    "1",
+    "project_version":    "6f148a8-dirty",
     "project_path":       "D:/Mini Project Code/isac_csi_project",
     "idf_path":           "D:/Espressif/frameworks/esp-idf-v5.3.1",
     "build_dir":          "D:/Mini Project Code/isac_csi_project/build",
