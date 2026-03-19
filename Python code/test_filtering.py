@@ -3,105 +3,190 @@ import re
 import math
 import numpy as np
 from collections import deque
+import time
+import matplotlib.pyplot as plt
 
-# 🔥 Import filtering
-from filtering import preprocess_frame, filter_window
+from filtering import preprocess_frame, filter_window, detect_motion
 
 
 # ===================== CONFIG =====================
 PORT = "COM5"
 BAUD = 115200
-WINDOW_SIZE = 50
+WINDOW_SIZE = 20
+MAX_POINTS = 300   # history length
 
-ser = serial.Serial(PORT, BAUD, timeout=1)
 
-csi_buffer = deque(maxlen=WINDOW_SIZE)
+# ===================== SERIAL =====================
+def connect_serial():
+    while True:
+        try:
+            ser = serial.Serial(PORT, BAUD, timeout=1)
+            print("✅ Serial Connected")
+            return ser
+        except:
+            print("❌ Waiting for ESP32...")
+            time.sleep(2)
+
+
+ser = connect_serial()
+
+amp_buffer = deque(maxlen=WINDOW_SIZE)
+phase_buffer = deque(maxlen=WINDOW_SIZE)
+
+# 🔥 HISTORY
+raw_history = []
+filtered_history = []
 
 
 # ===================== PARSER =====================
 def parse_csi(line):
     try:
-        if "DATA:[" not in line:
+        if "[" not in line:
             return None
 
-        ts_match = re.search(r'TS:(\d+:\d+:\d+)', line)
-        ts = ts_match.group(1) if ts_match else None
+        ts_match = re.search(r'(\d+:\d+:\d+)', line)
+        ts = ts_match.group(1) if ts_match else "NA"
 
-        rssi_match = re.search(r'RSSI:(-?\d+)', line)
-        rssi = int(rssi_match.group(1)) if rssi_match else None
+        rssi_match = re.search(r'RSSI[:=]?\s*(-?\d+)', line)
+        rssi = int(rssi_match.group(1)) if rssi_match else 0
 
-        data_match = re.search(r'DATA:\[(.*)\]', line)
+        data_match = re.search(r'\[(.*?)\]', line)
         if not data_match:
             return None
 
         raw_data = list(map(int, data_match.group(1).split(',')))
 
-        csi = []
-        for i in range(0, len(raw_data), 2):
+        amp = []
+        phase = []
+
+        for i in range(0, len(raw_data) - 1, 2):
             real = raw_data[i]
             imag = raw_data[i + 1]
-            amp = math.sqrt(real**2 + imag**2)
-            csi.append(amp)
 
-        return ts, rssi, csi
+            complex_val = complex(real, imag)
+
+            amp.append(abs(complex_val))
+            phase.append(np.angle(complex_val))
+
+        return ts, rssi, amp, phase
 
     except:
         return None
 
 
-# ===================== 🔥 NEW MOTION DETECTION =====================
-def detect_motion(final_signal, threshold=0.002):
-    """
-    More sensitive motion detection using difference
-    """
-    diff = np.diff(final_signal)
-    motion_score = np.mean(np.abs(diff))
+# ===================== 🔥 GRAPH SETUP =====================
+plt.ion()
+fig, axs = plt.subplots(2, 1, figsize=(10, 6))
 
-    return motion_score > threshold, motion_score
+raw_line, = axs[0].plot([], [], linewidth=2)
+filtered_line, = axs[1].plot([], [], linewidth=2)
+
+axs[0].set_title("Raw CSI (Amplitude Avg)")
+axs[1].set_title("Filtered Motion Signal")
+
+axs[0].grid(True)
+axs[1].grid(True)
+
+
+# 🔥 Y SCALE MEMORY (smooth movement)
+raw_min, raw_max = 0, 200
+filt_min, filt_max = -5, 5
+
+SMOOTH = 0.2
+MARGIN = 0.5
 
 
 # ===================== MAIN LOOP =====================
-print("🚀 Starting CSI Filtering Test (UPDATED)...\n")
+print("🚀 CSI System Running (Full Graph + Smooth Axis)...\n")
+
+frame_count = 0
 
 while True:
     try:
         line = ser.readline().decode(errors="ignore").strip()
 
+        if not line:
+            continue
+
         result = parse_csi(line)
 
         if result:
-            ts, rssi, csi = result
+            frame_count += 1
+            ts, rssi, amp, phase = result
 
-            # ❌ IMPORTANT: NO NORMALIZATION
-            csi = preprocess_frame(csi)   # make sure this does NOT normalize
+            amp, phase = preprocess_frame(amp, phase)
 
-            csi_buffer.append(csi)
+            amp_buffer.append(amp)
+            phase_buffer.append(phase)
 
-            print(f"\n⏱ TIME: {ts} | RSSI: {rssi}")
-            print("RAW CSI:", np.round(csi[:10], 3))
+            print(f"\n📦 Frame: {frame_count}")
+            print(f"⏱ TIME: {ts} | RSSI: {rssi}")
 
-            if len(csi_buffer) == WINDOW_SIZE:
+            # ===================== RAW =====================
+            if len(amp_buffer) > 0:
+                raw_signal = np.mean(np.array(amp_buffer), axis=1)
 
-                filtered_signals, final_signal = filter_window(csi_buffer)
+                raw_history.append(raw_signal[-1])
+
+                if len(raw_history) > MAX_POINTS:
+                    raw_history.pop(0)
+
+                raw_line.set_data(range(len(raw_history)), raw_history)
+                axs[0].set_xlim(0, MAX_POINTS)
+
+                # 🔥 Smooth Y scaling
+                new_min = np.min(raw_history) - MARGIN
+                new_max = np.max(raw_history) + MARGIN
+
+                raw_min = (1 - SMOOTH) * raw_min + SMOOTH * new_min
+                raw_max = (1 - SMOOTH) * raw_max + SMOOTH * new_max
+
+                axs[0].set_ylim(raw_min, raw_max)
+
+            # ===================== FILTERED =====================
+            if len(amp_buffer) >= WINDOW_SIZE:
+
+                _, _, final_signal = filter_window(amp_buffer, phase_buffer)
 
                 motion, score = detect_motion(final_signal)
 
-                print("FILTERED SIGNAL:", np.round(final_signal[-10:], 3))
-                print(f"Motion Score: {score:.5f}")
-
-                # 🔥 DEBUG (IMPORTANT)
-                print("Signal Range:", 
-                      round(np.min(final_signal), 4), 
-                      "→", 
-                      round(np.max(final_signal), 4))
+                print("Motion Score:", round(score, 5))
 
                 if motion:
-                    print("🚶 Motion Detected")
+                    print("🚶 MOTION DETECTED")
                 else:
-                    print("🟢 No Motion")
+                    print("🟢 NO MOTION")
 
-                print("-" * 60)
+                filtered_history.append(final_signal[-1])
+
+                if len(filtered_history) > MAX_POINTS:
+                    filtered_history.pop(0)
+
+                filtered_line.set_data(range(len(filtered_history)), filtered_history)
+                axs[1].set_xlim(0, MAX_POINTS)
+
+                # 🔥 Smooth Y scaling
+                new_min = np.min(filtered_history) - MARGIN
+                new_max = np.max(filtered_history) + MARGIN
+
+                filt_min = (1 - SMOOTH) * filt_min + SMOOTH * new_min
+                filt_max = (1 - SMOOTH) * filt_max + SMOOTH * new_max
+
+                axs[1].set_ylim(filt_min, filt_max)
+
+            # ===================== DRAW =====================
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+            plt.pause(0.01)
+
+    except serial.SerialException:
+        print("⚠️ Serial Error → Reconnecting...")
+        ser.close()
+        ser = connect_serial()
 
     except KeyboardInterrupt:
-        print("\nStopped")
+        print("\n🛑 Stopped")
         break
+
+    except Exception as e:
+        print("⚠️ Error:", e)

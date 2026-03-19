@@ -1,14 +1,37 @@
 import numpy as np
-from scipy.signal import savgol_filter, butter, filtfilt
 
 
-# ===================== 🔥 EMA FILTER =====================
-def ema(signal, alpha=0.3):
-    """
-    Exponential Moving Average (temporal smoothing)
-    """
+# ===================== 🔥 HAMPEL FILTER =====================
+class HampelFilter:
+    def __init__(self, window_length=5, threshold=3.0):
+        if window_length % 2 == 0:
+            window_length += 1
+        self.window_length = window_length
+        self.threshold = threshold
+        self.half = window_length // 2
+
+    def filter(self, signal):
+        signal = np.array(signal, dtype=float)
+        filtered = signal.copy()
+
+        for i in range(len(signal)):
+            start = max(0, i - self.half)
+            end = min(len(signal), i + self.half + 1)
+
+            window = signal[start:end]
+            median = np.median(window)
+            mad = np.median(np.abs(window - median))
+
+            if mad > 1e-6:
+                if abs(signal[i] - median) / mad > self.threshold:
+                    filtered[i] = median
+
+        return filtered
+
+
+# ===================== 🔥 EMA (LIGHT SMOOTHING) =====================
+def ema(signal, alpha=0.2):
     signal = np.array(signal, dtype=float)
-
     out = np.zeros_like(signal)
     out[0] = signal[0]
 
@@ -18,145 +41,90 @@ def ema(signal, alpha=0.3):
     return out
 
 
-# ===================== 🔥 HAMPEL FILTER =====================
-def hampel_filter(signal, window_size=5, threshold=3):
+# ===================== 🔥 PREPROCESS FRAME =====================
+def preprocess_frame(amp, phase):
     """
-    Robust outlier removal
+    Preserve raw CSI (no normalization)
+    Fix phase wrapping
     """
-    signal = np.array(signal, dtype=float)
-    filtered = signal.copy()
+    amp = np.array(amp, dtype=float)
+    phase = np.array(phase, dtype=float)
 
-    half_window = window_size // 2
+    # 🔥 unwrap phase (VERY IMPORTANT)
+    phase = np.unwrap(phase)
 
-    for i in range(len(signal)):
-        start = max(0, i - half_window)
-        end = min(len(signal), i + half_window + 1)
-
-        window = signal[start:end]
-
-        median = np.median(window)
-        mad = np.median(np.abs(window - median))
-
-        if mad == 0:
-            continue
-
-        if abs(signal[i] - median) > threshold * mad:
-            filtered[i] = median
-
-    return filtered
+    return amp, phase
 
 
-# ===================== 🔥 BANDPASS FILTER =====================
-def bandpass_filter(signal, low=0.5, high=2.0, fs=20, order=3):
+# ===================== 🔥 CORE FILTER =====================
+def process_signal(window_data):
     """
-    Extract motion frequency band
-    """
-    nyq = 0.5 * fs
-    low = low / nyq
-    high = high / nyq
-
-    b, a = butter(order, [low, high], btype='band')
-
-    try:
-        return filtfilt(b, a, signal)
-    except:
-        return signal  # safe fallback
-
-
-# ===================== 🔥 ZERO HANDLING =====================
-def handle_zeros(csi):
-    """
-    Replace zeros with interpolation (DO NOT REMOVE)
-    """
-    csi = np.array(csi, dtype=float)
-
-    for i in range(len(csi)):
-        if csi[i] == 0:
-            if i == 0:
-                csi[i] = csi[i + 1]
-            elif i == len(csi) - 1:
-                csi[i] = csi[i - 1]
-            else:
-                csi[i] = (csi[i - 1] + csi[i + 1]) / 2
-
-    return csi
-
-
-# ===================== 🔥 NORMALIZATION =====================
-def normalize(signal):
-    signal = np.array(signal, dtype=float)
-
-    min_val = np.min(signal)
-    max_val = np.max(signal)
-
-    if max_val - min_val == 0:
-        return signal
-
-    return (signal - min_val) / (max_val - min_val)
-
-
-# ===================== 🔥 SINGLE FRAME CLEANING =====================
-def preprocess_frame(csi):
-    """
-    Basic cleaning on single CSI frame (128 values)
-    """
-    csi = handle_zeros(csi)
-    csi = normalize(csi)
-
-    return csi
-
-
-# ===================== 🔥 SLIDING WINDOW FILTER =====================
-def filter_window(csi_window, fs=20):
-    """
-    Apply filtering on sliding window
-
-    Input:
-        csi_window: shape (N_frames, 128)
-
-    Output:
-        filtered_signals: shape (128, N_frames)
-        final_signal: 1D motion signal
+    Process each subcarrier independently
     """
 
-    window_data = np.array(csi_window)          # (N, 128)
-    time_series = window_data.T                 # (128, N)
+    window_data = np.array(window_data)   # (N, 128)
+    time_series = window_data.T           # (128, N)
 
-    filtered_signals = []
+    hampel = HampelFilter(window_length=5, threshold=3.0)
 
-    for subcarrier_signal in time_series:
+    filtered_all = []
 
-        # Step 1: Hampel (remove spikes)
-        signal = hampel_filter(subcarrier_signal)
+    for sub in time_series:
 
-        # Step 2: Savitzky-Golay (smooth)
-        if len(signal) >= 7:
-            signal = savgol_filter(signal, 7, 2)
+        s = np.array(sub, dtype=float)
 
-        # Step 3: EMA (temporal smoothing)
-        signal = ema(signal, alpha=0.3)
+        # 🔥 Step 1: Remove spikes
+        s = hampel.filter(s)
 
-        # Step 4: Bandpass (motion extraction)
-        signal = bandpass_filter(signal, fs=fs)
+        # 🔥 Step 2: Light smoothing (retain info)
+        s = ema(s, alpha=0.2)
 
-        filtered_signals.append(signal)
+        # 🔥 Step 3: Remove DC component
+        s = s - np.mean(s)
 
-    filtered_signals = np.array(filtered_signals)   # (128, N)
+        filtered_all.append(s)
 
-    # Combine all subcarriers → single motion signal
-    final_signal = np.mean(filtered_signals, axis=0)
+    return np.array(filtered_all)   # (128, N)
 
-    return filtered_signals, final_signal
 
+# ===================== 🔥 MAIN FILTER =====================
+# ===================== 🔥 MAIN FILTER =====================
+def filter_window(amp_window, phase_window):
+    """
+    Full CSI filtering pipeline (Amplitude + Phase)
+    Uses ALL subcarriers (NO DATA LOSS)
+    """
+
+    # 🔥 Process amplitude and phase separately
+    amp_filtered = process_signal(amp_window)
+    phase_filtered = process_signal(phase_window)
+
+    # ===================== 🔥 WEIGHTED FUSION =====================
+
+    # Variance = importance
+    amp_var = np.var(amp_filtered, axis=1)
+    phase_var = np.var(phase_filtered, axis=1)
+
+    score = amp_var + phase_var
+
+    # Normalize weights (VERY IMPORTANT)
+    weights = score / (np.sum(score) + 1e-6)
+
+    # Combine amplitude + phase
+    combined = amp_filtered + 0.5 * phase_filtered
+
+    # Weighted sum across ALL 128 subcarriers
+    final_signal = np.sum(combined.T * weights, axis=1)
+
+    return amp_filtered, phase_filtered, final_signal
 
 # ===================== 🔥 MOTION DETECTION =====================
-def detect_motion(final_signal, threshold=0.01):
+def detect_motion(signal, threshold=0.2):
     """
-    Simple motion detection using variance
+    Motion detection using temporal variation
     """
-    motion_score = np.var(final_signal)
 
-    if motion_score > threshold:
-        return True, motion_score
-    else:
-        return False, motion_score
+    diff = np.diff(signal)
+    score = np.mean(np.abs(diff))
+
+    return score > threshold, score
