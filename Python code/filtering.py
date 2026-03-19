@@ -1,7 +1,7 @@
 import numpy as np
 
 
-# ===================== 🔥 HAMPEL FILTER =====================
+# ===================== 🔥 HAMPEL (SPIKE REMOVAL) =====================
 class HampelFilter:
     def __init__(self, window_length=5, threshold=3.0):
         if window_length % 2 == 0:
@@ -29,9 +29,10 @@ class HampelFilter:
         return filtered
 
 
-# ===================== 🔥 EMA (LIGHT SMOOTHING) =====================
+# ===================== 🔥 EMA (LIGHT NOISE SMOOTHING) =====================
 def ema(signal, alpha=0.2):
     signal = np.array(signal, dtype=float)
+
     out = np.zeros_like(signal)
     out[0] = signal[0]
 
@@ -41,26 +42,19 @@ def ema(signal, alpha=0.2):
     return out
 
 
-# ===================== 🔥 PREPROCESS FRAME =====================
+# ===================== 🔥 PREPROCESS =====================
 def preprocess_frame(amp, phase):
-    """
-    Preserve raw CSI (no normalization)
-    Fix phase wrapping
-    """
     amp = np.array(amp, dtype=float)
     phase = np.array(phase, dtype=float)
 
-    # 🔥 unwrap phase (VERY IMPORTANT)
+    # Only unwrap phase (important)
     phase = np.unwrap(phase)
 
     return amp, phase
 
 
-# ===================== 🔥 CORE FILTER =====================
+# ===================== 🔥 NOISE REMOVAL PIPELINE =====================
 def process_signal(window_data):
-    """
-    Process each subcarrier independently
-    """
 
     window_data = np.array(window_data)   # (N, 128)
     time_series = window_data.T           # (128, N)
@@ -73,14 +67,11 @@ def process_signal(window_data):
 
         s = np.array(sub, dtype=float)
 
-        # 🔥 Step 1: Remove spikes
+        # ✅ Step 1: Remove spikes
         s = hampel.filter(s)
 
-        # 🔥 Step 2: Light smoothing (retain info)
+        # ✅ Step 2: Light smoothing
         s = ema(s, alpha=0.2)
-
-        # 🔥 Step 3: Remove DC component
-        s = s - np.mean(s)
 
         filtered_all.append(s)
 
@@ -88,43 +79,22 @@ def process_signal(window_data):
 
 
 # ===================== 🔥 MAIN FILTER =====================
-# ===================== 🔥 MAIN FILTER =====================
 def filter_window(amp_window, phase_window):
-    """
-    Full CSI filtering pipeline (Amplitude + Phase)
-    Uses ALL subcarriers (NO DATA LOSS)
-    """
 
-    # 🔥 Process amplitude and phase separately
     amp_filtered = process_signal(amp_window)
     phase_filtered = process_signal(phase_window)
 
-    # ===================== 🔥 WEIGHTED FUSION =====================
-
-    # Variance = importance
-    amp_var = np.var(amp_filtered, axis=1)
-    phase_var = np.var(phase_filtered, axis=1)
-
-    score = amp_var + phase_var
-
-    # Normalize weights (VERY IMPORTANT)
-    weights = score / (np.sum(score) + 1e-6)
-
-    # Combine amplitude + phase
-    combined = amp_filtered + 0.5 * phase_filtered
-
-    # Weighted sum across ALL 128 subcarriers
-    final_signal = np.sum(combined.T * weights, axis=1)
+    # ✅ KEEP ALL SUBCARRIERS (NO SELECTION)
+    final_signal = (
+        np.mean(amp_filtered, axis=0)
+        + 0.5 * np.mean(phase_filtered, axis=0)
+    )
 
     return amp_filtered, phase_filtered, final_signal
 
-# ===================== 🔥 MOTION DETECTION =====================
-def detect_motion(signal, threshold=0.2):
-    """
-    Motion detection using temporal variation
-    """
 
+# ===================== 🔥 MOTION =====================
+def detect_motion(signal, threshold=0.05):
     diff = np.diff(signal)
     score = np.mean(np.abs(diff))
-
     return score > threshold, score
