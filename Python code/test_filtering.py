@@ -1,19 +1,22 @@
 import serial
 import re
-import math
 import numpy as np
 from collections import deque
 import time
 import matplotlib.pyplot as plt
 
-from filtering import preprocess_frame, filter_window, detect_motion
+# 🔥 IMPORT YOUR MODULES
+from filtering import preprocess_frame, filter_window
+from features import extract_features
 
 
 # ===================== CONFIG =====================
 PORT = "COM5"
 BAUD = 115200
+
 WINDOW_SIZE = 20
-MAX_POINTS = 300   # history length
+MAX_POINTS = 300
+FS = 20  # sampling rate
 
 
 # ===================== SERIAL =====================
@@ -32,10 +35,18 @@ ser = connect_serial()
 
 amp_buffer = deque(maxlen=WINDOW_SIZE)
 phase_buffer = deque(maxlen=WINDOW_SIZE)
+rssi_buffer = deque(maxlen=WINDOW_SIZE)
 
-# 🔥 HISTORY
-raw_history = []
-filtered_history = []
+# ===================== HISTORY =====================
+csi_history = []
+rssi_history = []
+
+feature_history = {
+    "variance": [],
+    "doppler_frequency": [],
+    "spectral_energy": [],
+    "breathing_period": []
+}
 
 
 # ===================== PARSER =====================
@@ -63,10 +74,10 @@ def parse_csi(line):
             real = raw_data[i]
             imag = raw_data[i + 1]
 
-            complex_val = complex(real, imag)
+            c = complex(real, imag)
 
-            amp.append(abs(complex_val))
-            phase.append(np.angle(complex_val))
+            amp.append(abs(c))
+            phase.append(np.angle(c))
 
         return ts, rssi, amp, phase
 
@@ -74,32 +85,39 @@ def parse_csi(line):
         return None
 
 
-# ===================== 🔥 GRAPH SETUP =====================
+# ===================== GRAPH SETUP =====================
 plt.ion()
-fig, axs = plt.subplots(2, 1, figsize=(10, 6))
 
-raw_line, = axs[0].plot([], [], linewidth=2)
-filtered_line, = axs[1].plot([], [], linewidth=2)
+fig, axs = plt.subplots(3, 2, figsize=(12, 8))
 
-axs[0].set_title("Raw CSI (Amplitude Avg)")
-axs[1].set_title("Filtered Motion Signal")
+# Graphs
+csi_line, = axs[0, 0].plot([], [], lw=2)
+rssi_line, = axs[0, 1].plot([], [], lw=2)
 
-axs[0].grid(True)
-axs[1].grid(True)
+var_line, = axs[1, 0].plot([], [], lw=2)
+doppler_line, = axs[1, 1].plot([], [], lw=2)
 
+energy_line, = axs[2, 0].plot([], [], lw=2)
+breath_line, = axs[2, 1].plot([], [], lw=2)
 
-# 🔥 Y SCALE MEMORY (smooth movement)
-raw_min, raw_max = 0, 200
-filt_min, filt_max = -5, 5
+# Titles
+axs[0, 0].set_title("CSI Amplitude (Avg)")
+axs[0, 1].set_title("RSSI")
 
-SMOOTH = 0.2
-MARGIN = 0.5
+axs[1, 0].set_title("Variance")
+axs[1, 1].set_title("Doppler Frequency")
+
+axs[2, 0].set_title("Spectral Energy")
+axs[2, 1].set_title("Breathing Period")
+
+for ax in axs.flatten():
+    ax.grid(True)
 
 
 # ===================== MAIN LOOP =====================
-print("🚀 CSI System Running (Full Graph + Smooth Axis)...\n")
+print("🚀 CSI + Feature System Running...\n")
 
-frame_count = 0
+frame = 0
 
 while True:
     try:
@@ -111,70 +129,73 @@ while True:
         result = parse_csi(line)
 
         if result:
-            frame_count += 1
+            frame += 1
             ts, rssi, amp, phase = result
 
+            # preprocess
             amp, phase = preprocess_frame(amp, phase)
 
+            # buffer
             amp_buffer.append(amp)
             phase_buffer.append(phase)
+            rssi_buffer.append(rssi)
 
-            print(f"\n📦 Frame: {frame_count}")
-            print(f"⏱ TIME: {ts} | RSSI: {rssi}")
+            print(f"\n📦 Frame: {frame} | TIME: {ts} | RSSI: {rssi}")
 
-            # ===================== RAW =====================
+            # ================= CSI GRAPH =================
             if len(amp_buffer) > 0:
-                raw_signal = np.mean(np.array(amp_buffer), axis=1)
+                avg_csi = np.mean(np.array(amp_buffer), axis=1)
+                csi_history.append(avg_csi[-1])
 
-                raw_history.append(raw_signal[-1])
+                if len(csi_history) > MAX_POINTS:
+                    csi_history.pop(0)
 
-                if len(raw_history) > MAX_POINTS:
-                    raw_history.pop(0)
+                csi_line.set_data(range(len(csi_history)), csi_history)
+                axs[0, 0].set_xlim(0, MAX_POINTS)
 
-                raw_line.set_data(range(len(raw_history)), raw_history)
-                axs[0].set_xlim(0, MAX_POINTS)
+            # ================= RSSI GRAPH =================
+            rssi_history.append(rssi)
+            if len(rssi_history) > MAX_POINTS:
+                rssi_history.pop(0)
 
-                # 🔥 Smooth Y scaling
-                new_min = np.min(raw_history) - MARGIN
-                new_max = np.max(raw_history) + MARGIN
+            rssi_line.set_data(range(len(rssi_history)), rssi_history)
+            axs[0, 1].set_xlim(0, MAX_POINTS)
 
-                raw_min = (1 - SMOOTH) * raw_min + SMOOTH * new_min
-                raw_max = (1 - SMOOTH) * raw_max + SMOOTH * new_max
-
-                axs[0].set_ylim(raw_min, raw_max)
-
-            # ===================== FILTERED =====================
+            # ================= FEATURE EXTRACTION =================
             if len(amp_buffer) >= WINDOW_SIZE:
 
                 _, _, final_signal = filter_window(amp_buffer, phase_buffer)
 
-                motion, score = detect_motion(final_signal)
+                features = extract_features(
+                    final_signal,
+                    phase_buffer[-1],
+                    rssi_buffer,
+                    FS
+                )
 
-                print("Motion Score:", round(score, 5))
+                # PRINT
+                print("Variance:", round(features["variance"], 4))
+                print("Doppler:", round(features["doppler_frequency"], 4))
+                print("Energy:", round(features["spectral_energy"], 4))
+                print("Breathing:", round(features["breathing_period"], 4))
 
-                if motion:
-                    print("🚶 MOTION DETECTED")
-                else:
-                    print("🟢 NO MOTION")
+                # ================= STORE =================
+                for key in feature_history:
+                    feature_history[key].append(features[key])
+                    if len(feature_history[key]) > MAX_POINTS:
+                        feature_history[key].pop(0)
 
-                filtered_history.append(final_signal[-1])
+                # ================= UPDATE GRAPHS =================
+                var_line.set_data(range(len(feature_history["variance"])), feature_history["variance"])
+                doppler_line.set_data(range(len(feature_history["doppler_frequency"])), feature_history["doppler_frequency"])
+                energy_line.set_data(range(len(feature_history["spectral_energy"])), feature_history["spectral_energy"])
+                breath_line.set_data(range(len(feature_history["breathing_period"])), feature_history["breathing_period"])
 
-                if len(filtered_history) > MAX_POINTS:
-                    filtered_history.pop(0)
+                for ax in axs.flatten():
+                    ax.relim()
+                    ax.autoscale_view()
 
-                filtered_line.set_data(range(len(filtered_history)), filtered_history)
-                axs[1].set_xlim(0, MAX_POINTS)
-
-                # 🔥 Smooth Y scaling
-                new_min = np.min(filtered_history) - MARGIN
-                new_max = np.max(filtered_history) + MARGIN
-
-                filt_min = (1 - SMOOTH) * filt_min + SMOOTH * new_min
-                filt_max = (1 - SMOOTH) * filt_max + SMOOTH * new_max
-
-                axs[1].set_ylim(filt_min, filt_max)
-
-            # ===================== DRAW =====================
+            # ================= DRAW =================
             fig.canvas.draw()
             fig.canvas.flush_events()
             plt.pause(0.01)
