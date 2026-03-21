@@ -3,20 +3,14 @@ import re
 import numpy as np
 from collections import deque
 import time
-import matplotlib.pyplot as plt
-
-# 🔥 IMPORT YOUR MODULES
-from filtering import preprocess_frame, filter_window
-from features import extract_features
-
 
 # ===================== CONFIG =====================
 PORT = "COM5"
 BAUD = 115200
 
 WINDOW_SIZE = 20
-MAX_POINTS = 300
-FS = 20  # sampling rate
+FS = 20
+CALIBRATION_FRAMES = 20
 
 
 # ===================== SERIAL =====================
@@ -31,183 +25,180 @@ def connect_serial():
             time.sleep(2)
 
 
-ser = connect_serial()
+# ===================== FIX LENGTH =====================
+def fix_length(arr, target_len=128):
+    arr = np.array(arr, dtype=float)
 
-amp_buffer = deque(maxlen=WINDOW_SIZE)
-phase_buffer = deque(maxlen=WINDOW_SIZE)
-rssi_buffer = deque(maxlen=WINDOW_SIZE)
+    if len(arr) > target_len:
+        return arr[:target_len]
+    elif len(arr) < target_len:
+        return np.pad(arr, (0, target_len - len(arr)))
 
-# ===================== HISTORY =====================
-csi_history = []
-rssi_history = []
-
-feature_history = {
-    "variance": [],
-    "doppler_frequency": [],
-    "spectral_energy": [],
-    "breathing_period": []
-}
+    return arr
 
 
 # ===================== PARSER =====================
 def parse_csi(line):
     try:
-        if "[" not in line:
+        if "DATA" not in line:
             return None
-
-        ts_match = re.search(r'(\d+:\d+:\d+)', line)
-        ts = ts_match.group(1) if ts_match else "NA"
 
         rssi_match = re.search(r'RSSI[:=]?\s*(-?\d+)', line)
         rssi = int(rssi_match.group(1)) if rssi_match else 0
 
-        data_match = re.search(r'\[(.*?)\]', line)
+        data_match = re.search(r'DATA:\[(.*?)\]', line)
         if not data_match:
             return None
 
-        raw_data = list(map(int, data_match.group(1).split(',')))
+        raw_str = data_match.group(1)
+        raw_str = re.sub(r'[^0-9,\-]', '', raw_str)
 
-        amp = []
-        phase = []
+        raw_data = list(map(int, raw_str.split(',')))
 
-        for i in range(0, len(raw_data) - 1, 2):
-            real = raw_data[i]
-            imag = raw_data[i + 1]
+        if len(raw_data) % 2 != 0:
+            return None
 
-            c = complex(real, imag)
+        amp, phase = [], []
 
+        for i in range(0, len(raw_data), 2):
+            c = complex(raw_data[i], raw_data[i+1])
             amp.append(abs(c))
             phase.append(np.angle(c))
 
-        return ts, rssi, amp, phase
+        return rssi, amp, phase
 
     except:
         return None
 
 
-# ===================== GRAPH SETUP =====================
-plt.ion()
+# ===================== FILTER =====================
+def filter_window(amp_buffer):
+    data = np.array(amp_buffer)
 
-fig, axs = plt.subplots(3, 2, figsize=(12, 8))
+    signal = np.mean(data, axis=1)
 
-# Graphs
-csi_line, = axs[0, 0].plot([], [], lw=2)
-rssi_line, = axs[0, 1].plot([], [], lw=2)
+    # ✅ ONLY remove DC (NO normalization)
+    signal = signal - np.mean(signal)
 
-var_line, = axs[1, 0].plot([], [], lw=2)
-doppler_line, = axs[1, 1].plot([], [], lw=2)
-
-energy_line, = axs[2, 0].plot([], [], lw=2)
-breath_line, = axs[2, 1].plot([], [], lw=2)
-
-# Titles
-axs[0, 0].set_title("CSI Amplitude (Avg)")
-axs[0, 1].set_title("RSSI")
-
-axs[1, 0].set_title("Variance")
-axs[1, 1].set_title("Doppler Frequency")
-
-axs[2, 0].set_title("Spectral Energy")
-axs[2, 1].set_title("Breathing Period")
-
-for ax in axs.flatten():
-    ax.grid(True)
+    return signal
 
 
-# ===================== MAIN LOOP =====================
-print("🚀 CSI + Feature System Running...\n")
+# ===================== FEATURES =====================
+def extract_features(signal):
+    features = {}
+
+    features["variance"] = float(np.var(signal))
+    features["energy"] = float(np.sum(signal**2))
+
+    diff = np.diff(signal)
+    features["mean_abs_diff"] = float(np.mean(np.abs(diff))) if len(diff) > 0 else 0.0
+
+    return features
+
+
+# ===================== DETECTOR =====================
+class PresenceDetector:
+    def __init__(self):
+        self.base_var = None
+        self.base_energy = None
+        self.base_diff = None
+
+    def calibrate(self, feature_list):
+        self.base_var = np.mean([f["variance"] for f in feature_list])
+        self.base_energy = np.mean([f["energy"] for f in feature_list])
+        self.base_diff = np.mean([f["mean_abs_diff"] for f in feature_list])
+
+        print("\n✅ CALIBRATION DONE")
+        print(f"Base VAR: {self.base_var:.4f}")
+        print(f"Base ENERGY: {self.base_energy:.2f}")
+        print(f"Base DIFF: {self.base_diff:.4f}\n")
+
+    def detect(self, features):
+        var_ratio = features["variance"] / (self.base_var + 1e-6)
+        energy_ratio = features["energy"] / (self.base_energy + 1e-6)
+        diff_ratio = features["mean_abs_diff"] / (self.base_diff + 1e-6)
+
+        # 🔥 Weighted score
+        score = 0.4 * var_ratio + 0.3 * energy_ratio + 0.3 * diff_ratio
+
+        presence = score > 1.15
+
+        confidence = max(0, min(100, (score - 1) * 100))
+
+        return presence, confidence, score, var_ratio, energy_ratio, diff_ratio
+
+
+# ===================== MAIN =====================
+ser = connect_serial()
+
+amp_buffer = deque(maxlen=WINDOW_SIZE)
+rssi_buffer = deque(maxlen=WINDOW_SIZE)
+
+detector = PresenceDetector()
+
+calibration_features = []
+is_calibrated = False
 
 frame = 0
+
+print("🚀 DETECTION SYSTEM STARTED\n")
 
 while True:
     try:
         line = ser.readline().decode(errors="ignore").strip()
 
-        if not line:
+        print("\n🔹 RAW:", line)
+
+        if not line or "DATA" not in line:
             continue
 
         result = parse_csi(line)
 
-        if result:
-            frame += 1
-            ts, rssi, amp, phase = result
+        if not result:
+            print("❌ Parsing failed")
+            continue
 
-            # preprocess
-            amp, phase = preprocess_frame(amp, phase)
+        rssi, amp, phase = result
 
-            # buffer
-            amp_buffer.append(amp)
-            phase_buffer.append(phase)
-            rssi_buffer.append(rssi)
+        amp = fix_length(amp)
 
-            print(f"\n📦 Frame: {frame} | TIME: {ts} | RSSI: {rssi}")
+        amp_buffer.append(amp)
+        rssi_buffer.append(rssi)
 
-            # ================= CSI GRAPH =================
-            if len(amp_buffer) > 0:
-                avg_csi = np.mean(np.array(amp_buffer), axis=1)
-                csi_history.append(avg_csi[-1])
+        frame += 1
+        print(f"📦 Frame {frame} | RSSI: {rssi}")
 
-                if len(csi_history) > MAX_POINTS:
-                    csi_history.pop(0)
+        if len(amp_buffer) < WINDOW_SIZE:
+            print("⏳ Waiting...")
+            continue
 
-                csi_line.set_data(range(len(csi_history)), csi_history)
-                axs[0, 0].set_xlim(0, MAX_POINTS)
+        signal = filter_window(amp_buffer)
+        features = extract_features(signal)
 
-            # ================= RSSI GRAPH =================
-            rssi_history.append(rssi)
-            if len(rssi_history) > MAX_POINTS:
-                rssi_history.pop(0)
+        print("📊 Features:", features)
 
-            rssi_line.set_data(range(len(rssi_history)), rssi_history)
-            axs[0, 1].set_xlim(0, MAX_POINTS)
+        # ================= CALIBRATION =================
+        if not is_calibrated:
+            print("📍 CALIBRATING...")
+            calibration_features.append(features)
 
-            # ================= FEATURE EXTRACTION =================
-            if len(amp_buffer) >= WINDOW_SIZE:
+            if len(calibration_features) >= CALIBRATION_FRAMES:
+                detector.calibrate(calibration_features)
+                is_calibrated = True
+                print("🚀 DETECTION STARTED\n")
 
-                _, _, final_signal = filter_window(amp_buffer, phase_buffer)
+            continue
 
-                features = extract_features(
-                    final_signal,
-                    phase_buffer[-1],
-                    rssi_buffer,
-                    FS
-                )
+        # ================= DETECTION =================
+        presence, conf, score, vr, er, dr = detector.detect(features)
 
-                # PRINT
-                print("Variance:", round(features["variance"], 4))
-                print("Doppler:", round(features["doppler_frequency"], 4))
-                print("Energy:", round(features["spectral_energy"], 4))
-                print("Breathing:", round(features["breathing_period"], 4))
+        print(f"Score: {score:.2f}")
+        print(f"VAR: {vr:.2f} | ENERGY: {er:.2f} | DIFF: {dr:.2f}")
 
-                # ================= STORE =================
-                for key in feature_history:
-                    feature_history[key].append(features[key])
-                    if len(feature_history[key]) > MAX_POINTS:
-                        feature_history[key].pop(0)
-
-                # ================= UPDATE GRAPHS =================
-                var_line.set_data(range(len(feature_history["variance"])), feature_history["variance"])
-                doppler_line.set_data(range(len(feature_history["doppler_frequency"])), feature_history["doppler_frequency"])
-                energy_line.set_data(range(len(feature_history["spectral_energy"])), feature_history["spectral_energy"])
-                breath_line.set_data(range(len(feature_history["breathing_period"])), feature_history["breathing_period"])
-
-                for ax in axs.flatten():
-                    ax.relim()
-                    ax.autoscale_view()
-
-            # ================= DRAW =================
-            fig.canvas.draw()
-            fig.canvas.flush_events()
-            plt.pause(0.01)
-
-    except serial.SerialException:
-        print("⚠️ Serial Error → Reconnecting...")
-        ser.close()
-        ser = connect_serial()
-
-    except KeyboardInterrupt:
-        print("\n🛑 Stopped")
-        break
+        if presence:
+            print(f"🟢 HUMAN DETECTED | {conf:.1f}%")
+        else:
+            print(f"⚫ EMPTY | {conf:.1f}%")
 
     except Exception as e:
-        print("⚠️ Error:", e)
+        print("❌ ERROR:", e)

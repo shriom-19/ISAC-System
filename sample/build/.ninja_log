@@ -1967,3 +1967,47 @@
 17496	17562	0	D:/Mini Project Code/sample/build/esp-idf/esptool_py/CMakeFiles/app_check_size	d8116613f159caea
 17562	22690	0	CMakeFiles/flash	6d17b771cf4e1ecf
 17562	22690	0	D:/Mini Project Code/sample/build/CMakeFiles/flash	6d17b771cf4e1ecf
+86	196	0	esp-idf/esptool_py/CMakeFiles/app_check_size	d8116613f159caea
+86	196	0	D:/Mini Project Code/sample/build/esp-idf/esptool_py/CMakeFiles/app_check_size	d8116613f159caea
+64	265	7954594559616355	bootloader-prefix/src/bootloader-stamp/bootloader-build	80bad989311571e5
+64	265	7954594559616355	bootloader/bootloader.elf	80bad989311571e5
+64	265	7954594559616355	bootloader/bootloader.bin	80bad989311571e5
+64	265	7954594559616355	bootloader/bootloader.map	80bad989311571e5
+64	265	7954594559616355	D:/Mini Project Code/sample/build/bootloader-prefix/src/bootloader-stamp/bootloader-build	80bad989311571e5
+64	265	7954594559616355	D:/Mini Project Code/sample/build/bootloader/bootloader.elf	80bad989311571e5
+64	265	7954594559616355	D:/Mini Project Code/sample/build/bootloader/bootloader.bin	80bad989311571e5
+64	265	7954594559616355	D:/Mini Project Code/sample/build/bootloader/bootloader.map	80bad989311571e5
+67	176	0	esp-idf/esptool_py/CMakeFiles/app_check_size	d8116613f159caea
+67	176	0	D:/Mini Project Code/sample/build/esp-idf/esptool_py/CMakeFiles/app_check_size	d8116613f159caea
+53	243	7954594559616355	bootloader-prefix/src/bootloader-stamp/bootloader-build	80bad989311571e5
+53	243	7954594559616355	bootloader/bootloader.elf	80bad989311571e5
+53	243	7954594559616355	bootloader/bootloader.bin	80bad989311571e5
+53	243	7954594559616355	bootloader/bootloader.map	80bad989311571e5
+53	243	7954594559616355	D:/Mini Project Code/sample/build/bootloader-prefix/src/bootloader-stamp/bootloader-build	80bad989311571e5
+53	243	7954594559616355	D:/Mini Project Code/sample/build/bootloader/bootloader.elf	80bad989311571e5
+53	243	7954594559616355	D:/Mini Project Code/sample/build/bootloader/bootloader.bin	80bad989311571e5
+53	243	7954594559616355	D:/Mini Project Code/sample/build/bootloader/bootloader.map	80bad989311571e5
+243	5530	0	CMakeFiles/flash	6d17b771cf4e1ecf
+243	5530	0	D:/Mini Project Code/sample/build/CMakeFiles/flash	6d17b771cf4e1ecf
+66	166	0	esp-idf/esptool_py/CMakeFiles/app_check_size	d8116613f159caea
+66	166	0	D:/Mini Project Code/sample/build/esp-idf/esptool_py/CMakeFiles/app_check_size	d8116613f159caea
+50	214	7954594559616355	bootloader-prefix/src/bootloader-stamp/bootloader-build	80bad989311571e5
+50	214	7954594559616355	bootloader/bootloader.elf	80bad989311571e5
+50	214	7954594559616355	bootloader/bootloader.bin	80bad989311571e5
+50	214	7954594559616355	bootloader/bootloader.map	80bad989311571e5
+50	214	7954594559616355	D:/Mini Project Code/sample/build/bootloader-prefix/src/bootloader-stamp/bootloader-build	80bad989311571e5
+50	214	7954594559616355	D:/Mini Project Code/sample/build/bootloader/bootloader.elf	80bad989311571e5
+50	214	7954594559616355	D:/Mini Project Code/sample/build/bootloader/bootloader.bin	80bad989311571e5
+50	214	7954594559616355	D:/Mini Project Code/sample/build/bootloader/bootloader.map	80bad989311571e5
+65	158	0	esp-idf/esptool_py/CMakeFiles/app_check_size	d8116613f159caea
+65	158	0	D:/Mini Project Code/sample/build/esp-idf/esptool_py/CMakeFiles/app_check_size	d8116613f159caea
+51	220	7954594559616355	bootloader-prefix/src/bootloader-stamp/bootloader-build	80bad989311571e5
+51	220	7954594559616355	bootloader/bootloader.elf	80bad989311571e5
+51	220	7954594559616355	bootloader/bootloader.bin	80bad989311571e5
+51	220	7954594559616355	bootloader/bootloader.map	80bad989311571e5
+51	220	7954594559616355	D:/Mini Project Code/sample/build/bootloader-prefix/src/bootloader-stamp/bootloader-build	80bad989311571e5
+51	220	7954594559616355	D:/Mini Project Code/sample/build/bootloader/bootloader.elf	80bad989311571e5
+51	220	7954594559616355	D:/Mini Project Code/sample/build/bootloader/bootloader.bin	80bad989311571e5
+51	220	7954594559616355	D:/Mini Project Code/sample/build/bootloader/bootloader.map	80bad989311571e5
+221	5404	0	CMakeFiles/flash	6d17b771cf4e1ecf
+221	5404	0	D:/Mini Project Code/sample/build/CMakeFiles/flash	6d17b771cf4e1ecf
