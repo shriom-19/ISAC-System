@@ -1,177 +1,196 @@
+from presence_detection import PresenceDetector
+from Doppler import DopplerMotionDetector
+from filtering import preprocess_frame, filter_window
+
 import serial
 import re
 import numpy as np
 from collections import deque
-
-# 🔥 IMPORT YOUR FILES
-from filtering import preprocess_frame, filter_window
-from features import extract_features
-from presence_detection import PresenceDetector
+import time
 
 # ================= CONFIG =================
-PORT = "COM5"
+PORT1 = "COM5"
+PORT2 = "COM7"
 BAUD = 115200
 
-WINDOW_SIZE = 20
-CALIBRATION_WINDOWS = 30
-TARGET_LEN = 128   # 🔥 FIXED LENGTH
+WINDOW_SIZE = 25
+FS = 20
+CALIBRATION_FRAMES = 100
+TARGET_LEN = 128
 
-print("🔌 Opening Serial Port...")
-ser = serial.Serial(PORT, BAUD, timeout=1)
-
-# Buffers
-amp_window = deque(maxlen=WINDOW_SIZE)
-phase_window = deque(maxlen=WINDOW_SIZE)
-rssi_window = deque(maxlen=WINDOW_SIZE)
-
-detector = PresenceDetector()
-calibration_data = []
-calibrated = False
+# ================= SERIAL =================
+def connect_serial(port):
+    while True:
+        try:
+            ser = serial.Serial(port, BAUD, timeout=1)
+            print(f"✅ Connected to {port}")
+            return ser
+        except:
+            print(f"❌ Waiting for {port}...")
+            time.sleep(2)
 
 # ================= PARSER =================
 def parse_line(line):
     try:
-        # ✅ MATCH YOUR FORMAT
-        rssi_match = re.search(r"RSSI:(-?\d+)", line)
-        csi_match = re.search(r"DATA:\[(.*)\]", line)
-
-        if not rssi_match or not csi_match:
+        if "DATA" not in line:
             return None
 
-        rssi = int(rssi_match.group(1))
-        csi_raw = list(map(int, csi_match.group(1).split(',')))
+        rssi = int(re.search(r'RSSI[:=]?\s*(-?\d+)', line).group(1))
+        raw = list(map(int, re.search(r'DATA:\[(.*?)\]', line).group(1).split(',')))
 
-        # Must be even
-        if len(csi_raw) % 2 != 0:
-            return None
+        i = np.array(raw[::2], dtype=float)
+        q = np.array(raw[1::2], dtype=float)
 
-        i = np.array(csi_raw[::2], dtype=float)
-        q = np.array(csi_raw[1::2], dtype=float)
-
-        # 🔥 REPLACE ZEROS (instead of removing)
         i[i == 0] = 0.001
         q[q == 0] = 0.001
 
-        # 🔥 FORCE FIXED LENGTH (CRITICAL FIX)
-        if len(i) >= TARGET_LEN:
-            i = i[:TARGET_LEN]
-            q = q[:TARGET_LEN]
-        else:
-            pad_len = TARGET_LEN - len(i)
-            i = np.pad(i, (0, pad_len))
-            q = np.pad(q, (0, pad_len))
+        i = np.pad(i[:TARGET_LEN], (0, max(0, TARGET_LEN - len(i))))
+        q = np.pad(q[:TARGET_LEN], (0, max(0, TARGET_LEN - len(q))))
 
-        # Convert
         amp = np.sqrt(i**2 + q**2)
         phase = np.arctan2(q, i)
+        iq = np.stack((i, q), axis=1)
 
-        return amp, phase, rssi
-
-    except Exception as e:
-        print("❌ PARSE ERROR:", e)
+        return amp, phase, rssi, iq
+    except:
         return None
 
 
-print("🚀 FULL DEBUG HUMAN DETECTION STARTED\n")
+# ================= INIT =================
+ser1 = connect_serial(PORT1)
+ser2 = connect_serial(PORT2)
 
-# ================= MAIN LOOP =================
+amp_buffer = deque(maxlen=WINDOW_SIZE)
+phase_buffer = deque(maxlen=WINDOW_SIZE)
+iq_buffer = deque(maxlen=WINDOW_SIZE)
+
+detector = PresenceDetector()
+doppler_detector = DopplerMotionDetector(fs=FS)
+
+doppler_smooth = deque(maxlen=10)
+
+calibration_data = []
+calibrated = False
+
+print("\n⚠️ KEEP ROOM EMPTY FOR CALIBRATION\n")
+print("🚀 HIGH SENSITIVITY PIPELINE STARTED\n")
+
+# ================= LOOP =================
 while True:
     try:
-        line = ser.readline().decode(errors='ignore').strip()
+        line1 = ser1.readline().decode(errors="ignore").strip()
+        line2 = ser2.readline().decode(errors="ignore").strip()
 
-        # 🔥 SHOW RAW DATA
-        if line:
-            print("\n📥 RAW LINE:", line)
+        parsed1 = parse_line(line1)
+        parsed2 = parse_line(line2)
 
-        if not line:
+        if not parsed1 or not parsed2:
             continue
 
-        parsed = parse_line(line)
+        amp1, phase1, rssi1, iq1 = parsed1
+        amp2, phase2, rssi2, iq2 = parsed2
 
-        if parsed is None:
-            print("⚠️ Skipped (parse failed)")
-            continue
+        # ================= FUSION =================
+        w1 = abs(rssi1)
+        w2 = abs(rssi2)
 
-        amp, phase, rssi = parsed
-
-        print("\n================ NEW FRAME =================")
-
-        # ================= RAW =================
-        print(f"📡 RSSI: {rssi}")
-        print(f"AMP size: {len(amp)}")
-        print(f"AMP (first 5): {amp[:5]}")
+        amp = (w1 * amp1 + w2 * amp2) / (w1 + w2)
+        phase = (w1 * phase1 + w2 * phase2) / (w1 + w2)
+        iq = (w1 * iq1 + w2 * iq2) / (w1 + w2)
 
         # ================= PREPROCESS =================
         amp, phase = preprocess_frame(amp, phase)
 
-        print("\n🧹 AFTER PREPROCESS")
-        print(f"AMP (first 5): {amp[:5]}")
-        print(f"PHASE (first 5): {phase[:5]}")
+        amp_buffer.append(amp)
+        phase_buffer.append(phase)
+        iq_buffer.append(iq)
 
-        # Store
-        amp_window.append(amp)
-        phase_window.append(phase)
-        rssi_window.append(rssi)
-
-        print(f"\n📦 Window size: {len(amp_window)}/{WINDOW_SIZE}")
-
-        if len(amp_window) < WINDOW_SIZE:
+        if len(amp_buffer) < WINDOW_SIZE:
             continue
 
         # ================= FILTER =================
-        amp_f, phase_f, final_signal = filter_window(
-            list(amp_window),
-            list(phase_window)
+        _, _, final_signal = filter_window(
+            list(amp_buffer),
+            list(phase_buffer)
         )
 
-        print("\n🔍 AFTER FILTER")
-        print(f"Final signal length: {len(final_signal)}")
-        print(f"FINAL SIGNAL (first 5): {final_signal[:5]}")
+        # ================= NORMALIZATION =================
+        final_signal = (final_signal - np.mean(final_signal)) / (np.std(final_signal) + 1e-6)
 
         # ================= CALIBRATION =================
         if not calibrated:
             calibration_data.append(final_signal)
+            print(f"📍 Calibrating {len(calibration_data)}/{CALIBRATION_FRAMES}")
 
-            print(f"\n📊 CALIBRATING {len(calibration_data)}/{CALIBRATION_WINDOWS}")
-
-            if len(calibration_data) >= CALIBRATION_WINDOWS:
+            if len(calibration_data) >= CALIBRATION_FRAMES:
                 detector.calibrate(calibration_data)
                 calibrated = True
-                print("\n🎯 CALIBRATION DONE — ENTER ROOM")
+                print("\n✅ CALIBRATION COMPLETE\n")
 
             continue
 
-        # ================= FEATURES =================
-        features = extract_features(
-            final_signal,
-            np.mean(phase_f, axis=0),
-            list(rssi_window)
-        )
+        # ================= PRESENCE =================
+        result = detector.detect(final_signal)
 
-        print("\n📊 FEATURES")
-        for k, v in features.items():
-            print(f"{k}: {v:.4f}")
+        presence = result["presence"]
+        confidence = result["confidence"]
 
-        # ================= DETECTION =================
-        result = detector.detect(final_signal, sensitivity="medium")
+        var_r = result["var_ratio"]
+        diff_r = result["diff_ratio"]
 
-        print("\n🧠 DETECTION METRICS")
-        print(f"RMS Ratio: {result['rms_ratio']:.3f}")
-        print(f"VAR Ratio: {result['var_ratio']:.3f}")
+        print("\n🧠 PRESENCE")
+        print(f"VAR: {var_r:.2f} | DIFF: {diff_r:.2f}")
 
-        # ================= FINAL RESULT =================
-        print("\n🎯 FINAL RESULT")
+        # ================= DOPPLER =================
+        iq_np = np.array(iq_buffer)
 
-        if result.get("presence"):
-            print(f"🟢 HUMAN DETECTED (Confidence: {result['confidence']:.1f}%)")
+        phase_full = doppler_detector.extract_phase(iq_np)
+        phase_full = phase_full[:, 5:110]
+
+        phase_mean = np.mean(phase_full, axis=1)
+
+        x = np.arange(len(phase_mean))
+        coeffs = np.polyfit(x, phase_mean, 1)
+        phase_detrended = phase_mean - (coeffs[0]*x + coeffs[1])
+
+        diff = np.diff(phase_detrended)
+
+        # 🔥 MORE SENSITIVE MAD FILTER
+        median = np.median(diff)
+        mad = np.median(np.abs(diff - median)) + 1e-6
+
+        clean_diff = diff[np.abs(diff - median) < 3.5 * mad]   # 🔥 increased sensitivity
+
+        if len(clean_diff) < 3:
+            doppler = 0.0
         else:
-            print(f"⚫ EMPTY ROOM (Confidence: {result['confidence']:.1f}%)")
+            doppler = np.median(np.abs(clean_diff)) * FS
 
-        print("============================================")
+        doppler_smooth.append(doppler)
+        doppler_final = np.mean(doppler_smooth)
 
-    except KeyboardInterrupt:
-        print("\n🛑 Stopped by user")
-        break
+        print(f"⚡ Doppler: {doppler_final:.3f}")
+
+        # ================= FINAL DECISION =================
+        print("\n🎯 RESULT")
+
+        # 🔥 REDUCED THRESHOLDS
+        var_th = 1.08
+        doppler_th = max(0.05, np.mean(doppler_smooth) * 0.8)
+
+        if presence and doppler_final > doppler_th and var_r > var_th:
+            print(f"🟢 HUMAN + MOTION ({confidence:.1f}%)")
+
+        elif presence or var_r > 1.05:
+            print(f"🟡 HUMAN PRESENT ({confidence:.1f}%)")
+
+        elif doppler_final > doppler_th:
+            print(f"🔵 MOTION ONLY ({confidence:.1f}%)")
+
+        else:
+            print(f"⚫ EMPTY ROOM ({confidence:.1f}%)")
+
+        print("="*50)
 
     except Exception as e:
         print("❌ ERROR:", e)

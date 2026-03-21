@@ -10,8 +10,7 @@ BAUD = 115200
 
 WINDOW_SIZE = 20
 FS = 20
-CALIBRATION_FRAMES = 50   # 🔥 increased
-
+CALIBRATION_FRAMES = 50
 
 # ===================== SERIAL =====================
 def connect_serial():
@@ -24,7 +23,6 @@ def connect_serial():
             print("❌ Waiting for ESP32...")
             time.sleep(2)
 
-
 # ===================== FIX LENGTH =====================
 def fix_length(arr, target_len=128):
     arr = np.array(arr, dtype=float)
@@ -35,7 +33,6 @@ def fix_length(arr, target_len=128):
         return np.pad(arr, (0, target_len - len(arr)))
 
     return arr
-
 
 # ===================== PARSER =====================
 def parse_csi(line):
@@ -59,31 +56,30 @@ def parse_csi(line):
             return None
 
         amp = []
-        phase = []
 
         for i in range(0, len(raw_data), 2):
             c = complex(raw_data[i], raw_data[i+1])
             amp.append(abs(c))
-            phase.append(np.angle(c))
 
-        return rssi, amp, phase
+        return rssi, amp
 
     except:
         return None
 
-
-# ===================== 🔥 IMPROVED FILTER =====================
+# ===================== FILTER =====================
 def filter_window(amp_buffer):
     data = np.array(amp_buffer)  # (window, subcarriers)
 
-    # 🔥 KEY CHANGE: use STD across subcarriers (captures motion)
+    # 🔥 motion-sensitive signal
     signal = np.std(data, axis=1)
+
+    # 🔥 smoothing (VERY IMPORTANT)
+    signal = np.convolve(signal, np.ones(3)/3, mode='same')
 
     # remove DC
     signal = signal - np.mean(signal)
 
     return signal
-
 
 # ===================== FEATURES =====================
 def extract_features(signal):
@@ -92,7 +88,6 @@ def extract_features(signal):
     features["variance"] = np.var(signal)
     features["energy"] = np.sum(signal ** 2)
 
-    # FFT → Doppler
     fft_vals = np.abs(np.fft.fft(signal))
     freqs = np.fft.fftfreq(len(signal), d=1/FS)
 
@@ -101,12 +96,12 @@ def extract_features(signal):
 
     return features
 
-
 # ===================== DETECTOR =====================
 class PresenceDetector:
     def __init__(self):
         self.baseline_rms = None
         self.baseline_var = None
+        self.history = deque(maxlen=5)  # 🔥 stability
 
     def calibrate(self, signals):
         full = np.concatenate(signals)
@@ -125,13 +120,23 @@ class PresenceDetector:
         rms_ratio = rms / (self.baseline_rms + 1e-6)
         var_ratio = var / (self.baseline_var + 1e-6)
 
-        # 🔥 FIXED LOGIC (variance based)
-        presence = var_ratio > 1.2
+        # 🔥 motion strength
+        diff = np.diff(signal)
+        motion_score = np.mean(np.abs(diff))
+
+        # 🔥 FINAL LOGIC (TUNED)
+        raw_presence = (
+            var_ratio > 1.3 or
+            motion_score > 0.15
+        )
+
+        # 🔥 STABILITY (anti flicker)
+        self.history.append(1 if raw_presence else 0)
+        presence = sum(self.history) >= 3
 
         confidence = min(100, (var_ratio - 1) * 100)
 
-        return presence, confidence, rms_ratio, var_ratio
-
+        return presence, confidence, rms_ratio, var_ratio, motion_score
 
 # ===================== MAIN =====================
 ser = connect_serial()
@@ -146,65 +151,54 @@ is_calibrated = False
 
 frame = 0
 
-print("🚀 DETECTION SYSTEM STARTED\n")
+print("🚀 HUMAN DETECTION SYSTEM STARTED\n")
 
 while True:
     try:
         line = ser.readline().decode(errors="ignore").strip()
 
-        # ===================== STEP 1 =====================
-        print("\n🔹 RAW LINE:", line)
-
         if not line:
             continue
 
-        if "DATA" not in line:
-            print("⏭️ Not CSI line")
+        print("\n📥 RAW:", line)
+
+        parsed = parse_csi(line)
+
+        if not parsed:
+            print("⚠️ Skipped")
             continue
 
-        print("✅ CSI DETECTED")
+        rssi, amp = parsed
 
-        # ===================== STEP 2 =====================
-        result = parse_csi(line)
-
-        if not result:
-            print("❌ Parsing failed")
-            continue
-
-        rssi, amp, phase = result
-        print("✅ Parsing OK | RSSI:", rssi)
-
-        # ===================== STEP 3 =====================
+        # 🔥 FIX LENGTH
         amp = fix_length(amp)
-        print("✅ Length:", len(amp))
 
-        # ===================== STEP 4 =====================
+        # 🔥 REMOVE UNSTABLE SUBCARRIERS
+        amp = amp[2:]
+
         amp_buffer.append(amp)
         rssi_buffer.append(rssi)
 
         frame += 1
-        print(f"📦 Frame {frame}")
+        print(f"📦 Frame {frame} | RSSI: {rssi}")
         print(f"📊 Buffer: {len(amp_buffer)}/{WINDOW_SIZE}")
 
         if len(amp_buffer) < WINDOW_SIZE:
-            print("⏳ Waiting for window...")
             continue
 
-        print("✅ Window ready")
-
-        # ===================== STEP 5 =====================
+        # ================= FILTER =================
         signal = filter_window(amp_buffer)
-        print("🔬 Filtered signal:", signal[:5])
 
-        # ===================== STEP 6 =====================
+        print("🔬 Signal:", signal[:5])
+
+        # ================= FEATURES =================
         features = extract_features(signal)
 
         print("📊 FEATURES")
         print(f"Variance: {features['variance']:.3f}")
         print(f"Doppler: {features['doppler']:.3f}")
-        print(f"Energy: {features['energy']:.2f}")
 
-        # ===================== STEP 7 =====================
+        # ================= CALIBRATION =================
         if not is_calibrated:
             print("📍 CALIBRATING...")
             calibration_data.append(signal)
@@ -216,18 +210,19 @@ while True:
 
             continue
 
-        # ===================== STEP 8 =====================
-        presence, conf, rms_r, var_r = detector.detect(signal)
+        # ================= DETECTION =================
+        presence, conf, rms_r, var_r, motion = detector.detect(signal)
 
-        print("\n🧠 RATIOS")
+        print("\n🧠 METRICS")
         print(f"RMS Ratio: {rms_r:.2f}")
         print(f"VAR Ratio: {var_r:.2f}")
+        print(f"Motion: {motion:.3f}")
 
         print("\n🎯 RESULT")
         if presence:
             print(f"🟢 HUMAN DETECTED | {conf:.1f}%")
         else:
-            print(f"⚫ EMPTY | {conf:.1f}%")
+            print(f"⚫ EMPTY ROOM | {conf:.1f}%")
 
     except Exception as e:
         print("❌ ERROR:", e)

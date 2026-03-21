@@ -39,8 +39,8 @@ def time_features(signal):
 
     diff = np.diff(signal)
 
+    # 🔥 FIX: NO CLIPPING
     variance = float(np.var(signal))
-    variance = min(variance, 10)   # 🔥 clamp spikes
 
     return {
         "variance": variance,
