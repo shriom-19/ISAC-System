@@ -10,7 +10,7 @@ from features import extract_features
 
 # ===================== CONFIG =====================
 PORT1 = "COM5"
-PORT2 = "COM7"
+PORT2 = "COM6"
 BAUD = 115200
 
 WINDOW_SIZE = 30
