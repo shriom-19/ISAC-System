@@ -175,8 +175,8 @@ while True:
         print("\n🎯 RESULT")
 
         # 🔥 REDUCED THRESHOLDS
-        var_th = 1.08
-        doppler_th = max(0.05, np.mean(doppler_smooth) * 0.8)
+        var_th = 0.95
+        doppler_th = max(0.05, np.mean(doppler_smooth) * 0.7)
 
         if presence and doppler_final > doppler_th and var_r > var_th:
             print(f"🟢 HUMAN + MOTION ({confidence:.1f}%)")

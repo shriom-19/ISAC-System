@@ -26,7 +26,7 @@ ensemble_feature = pickle.load(open(os.path.join(BASE_DIR, "feature_names_ensemb
 
 # ===================== CONFIG =====================
 PORT1 = "COM5"
-PORT2 = "COM6"
+PORT2 = "COM7"
 BAUD = 115200
 
 WINDOW_SIZE = 30

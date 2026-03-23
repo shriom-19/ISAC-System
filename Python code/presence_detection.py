@@ -43,19 +43,20 @@ class PresenceDetector:
         diff = np.mean(np.abs(np.diff(signal)))
 
         # ================= SYMMETRIC RATIOS =================
+        # ================= SYMMETRIC RATIOS =================
         var_ratio = max(var / (self.base_var + 1e-6),
                         self.base_var / (var + 1e-6))
-
+        
         energy_ratio = max(energy / (self.base_energy + 1e-6),
                            self.base_energy / (energy + 1e-6))
-
+        
         diff_ratio = max(diff / (self.base_diff + 1e-6),
                          self.base_diff / (diff + 1e-6))
-
-        # 🔥 CLAMP EXTREME VALUES (VERY IMPORTANT)
-        var_ratio = min(var_ratio, 5)
-        energy_ratio = min(energy_ratio, 5)
-        diff_ratio = min(diff_ratio, 5)
+        
+        # 🔥 REPLACE CLIPPING WITH LOG SCALING
+        var_ratio = np.log1p(var_ratio)
+        energy_ratio = np.log1p(energy_ratio)
+        diff_ratio = np.log1p(diff_ratio)
 
         # ================= SCORE =================
         score = (
@@ -66,9 +67,9 @@ class PresenceDetector:
 
         # ================= THRESHOLD =================
         thresholds = {
-            "low": 1.2,
-            "medium": 1.1,
-            "high": 1.05
+            "low": 1.1,
+            "medium": 1.0,
+            "high": 0.9
         }
 
         threshold = thresholds.get(sensitivity, 1.1)
